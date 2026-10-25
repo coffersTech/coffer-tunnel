@@ -1,0 +1,41 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>tech.coffers.tunnel</id>
+    <name>CofferTunnel</name>
+    <vendor email="support@coffers.tech" url="https://coffers.tech">coffersTech</vendor>
+
+    <description><![CDATA[
+    <h3>CofferTunnel - SSH Local Port Forward Tunnel Manager</h3>
+    <p>面向后端开发者的轻量级 SSH 端口转发工具，用于跳板访问内网数据库与微服务（PostgreSQL、MySQL、Redis 等）。</p>
+    <ul>
+        <li><b>System-native listener</b>：调用系统原生 OpenSSH，系统内所有应用（SpringBoot、Navicat、DBeaver 等）均可直接连接 <code>127.0.0.1:本地端口</code>。</li>
+        <li><b>生命周期管理</b>：一键启动/停止，IDE 关闭自动回收子进程，杜绝端口占用与僵尸进程。</li>
+        <li><b>实时日志输出</b>：独立 stderr/stdout 输出面板，快速排查认证失败、私钥权限、主机不可达等问题。</li>
+        <li><b>安全透明</b>：配置全量保存在本机持久化存储，支持一键 JSON 导入与导出备份。</li>
+    </ul>
+    ]]></description>
+
+    <!-- 兼容依赖平台基础模块（支持社区版与专业版） -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 全局配置持久化服务 -->
+        <applicationService serviceImplementation="tech.coffers.tunnel.config.CofferTunnelSettingsService"/>
+        
+        <!-- 全局 SSH 隧道进程管理服务 -->
+        <applicationService serviceImplementation="tech.coffers.tunnel.service.TunnelProcessService"/>
+
+        <!-- 侧边栏工具窗口 (ToolWindow) -->
+        <toolWindow id="CofferTunnel"
+                    anchor="right"
+                    secondary="false"
+                    factoryClass="tech.coffers.tunnel.ui.TunnelToolWindowFactory"
+                    icon="AllIcons.Nodes.Services"/>
+    </extensions>
+
+    <applicationListeners>
+        <!-- 监听 IDE 退出事件，安全清理所有后台 SSH 子进程 -->
+        <listener class="tech.coffers.tunnel.service.TunnelAppLifecycleListener"
+                  topic="com.intellij.ide.AppLifecycleListener"/>
+    </applicationListeners>
+</idea-plugin>

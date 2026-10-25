@@ -1,0 +1,12 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.iws
+*.ipr
+*.hprof
+*.pyc
+.DS_Store
+coffer_tunnels_backup.json
+coffer_backup.json
