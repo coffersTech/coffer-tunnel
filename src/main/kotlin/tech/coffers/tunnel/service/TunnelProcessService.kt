@@ -82,8 +82,9 @@ class TunnelProcessService : Disposable {
      */
     @Synchronized
     fun startTunnel(tunnel: TunnelConfig) {
-        val currentStatus = getStatus(tunnel.id)
-        if (currentStatus.isAlive) {
+        // 1. 只有当前真正存在存活的 SSH 进程时，才拦截重复启动
+        val activeProcess = activeProcesses[tunnel.id]
+        if (activeProcess != null && activeProcess.isAlive) {
             appendLog(tunnel.id, CofferTunnelBundle.message("log.already.alive"))
             return
         }
