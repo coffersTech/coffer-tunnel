@@ -5,7 +5,8 @@ plugins {
 }
 
 group = "tech.coffers"
-version = "1.0.0"
+// 支持外部传入 -PpluginVersion 动态指定发布版本号，默认 1.0.0
+version = (project.findProperty("pluginVersion") as? String)?.takeIf { it.isNotBlank() } ?: "1.0.0"
 
 repositories {
     mavenCentral()

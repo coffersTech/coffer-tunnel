@@ -2,18 +2,20 @@ name: Build and Release Plugin
 
 on:
   push:
-    branches: [ "main" ]
     tags: [ "v*" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: '指定版本号 (例如 1.0.1，留空则默认读取代码配置)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build & Verify Plugin
+    name: Build & Release Plugin
     runs-on: ubuntu-latest
 
     steps:
@@ -30,13 +32,26 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Determine Plugin Version
+        id: get_version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="1.0.0"
+          fi
+          echo "VERSION=$VER" >> $GITHUB_ENV
+          echo "当前构建版本号: $VER"
+
       - name: Run Tests and Build Plugin
-        run: ./gradlew check buildPlugin --stacktrace
+        run: ./gradlew check buildPlugin -PpluginVersion=${{ env.VERSION }} --stacktrace
 
       - name: Upload Plugin Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CofferTunnel-Plugin
+          name: CofferTunnel-${{ env.VERSION }}
           path: build/distributions/*.zip
 
       - name: Create GitHub Release
