@@ -46,7 +46,10 @@ object CofferTunnelBundle : DynamicBundle(BUNDLE) {
 
         return if (params.isNotEmpty()) {
             try {
-                MessageFormat.format(pattern, *params)
+                val formattedParams = params.map { param ->
+                    if (param is Number) param.toString() else param
+                }.toTypedArray()
+                MessageFormat.format(pattern, *formattedParams)
             } catch (_: Exception) {
                 pattern
             }
@@ -55,7 +58,11 @@ object CofferTunnelBundle : DynamicBundle(BUNDLE) {
         }
     }
 
+    @Volatile
+    var overrideLanguageForTest: String? = null
+
     private fun getCurrentLanguageMode(): String {
+        overrideLanguageForTest?.let { return it.uppercase() }
         return try {
             CofferTunnelSettingsService.getInstance().language.uppercase()
         } catch (_: Exception) {

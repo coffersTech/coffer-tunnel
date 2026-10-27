@@ -18,24 +18,44 @@ class TunnelModelAndValidationTest {
 
     @Test
     fun testLanguageSwitch() {
-        val service = CofferTunnelSettingsService.getInstance()
+        try {
+            // 测试强制英文
+            CofferTunnelBundle.overrideLanguageForTest = "EN"
+            assertEquals("Running", CofferTunnelBundle.message("status.running"))
+            assertEquals("New Jump Profile", CofferTunnelBundle.message("dialog.profile.new.title"))
+            assertEquals("Jump Host Connection Parameters", CofferTunnelBundle.message("dialog.profile.border"))
+            assertEquals("Test Connection", CofferTunnelBundle.message("action.test.connection"))
 
-        // 测试强制英文
-        service.language = "EN"
-        assertEquals("Running", CofferTunnelBundle.message("status.running"))
-        assertEquals("New Jump Profile", CofferTunnelBundle.message("dialog.profile.new.title"))
-        assertEquals("Jump Host Connection Parameters", CofferTunnelBundle.message("dialog.profile.border"))
-        assertEquals("Test Connection", CofferTunnelBundle.message("action.test.connection"))
+            // 测试强制中文
+            CofferTunnelBundle.overrideLanguageForTest = "ZH"
+            assertEquals("运行中", CofferTunnelBundle.message("status.running"))
+            assertEquals("新建跳板档案", CofferTunnelBundle.message("dialog.profile.new.title"))
+            assertEquals("跳板连接参数", CofferTunnelBundle.message("dialog.profile.border"))
+            assertEquals("测试连通性", CofferTunnelBundle.message("action.test.connection"))
+        } finally {
+            CofferTunnelBundle.overrideLanguageForTest = null
+        }
+    }
 
-        // 测试强制中文
-        service.language = "ZH"
-        assertEquals("运行中", CofferTunnelBundle.message("status.running"))
-        assertEquals("新建跳板档案", CofferTunnelBundle.message("dialog.profile.new.title"))
-        assertEquals("跳板连接参数", CofferTunnelBundle.message("dialog.profile.border"))
-        assertEquals("测试连通性", CofferTunnelBundle.message("action.test.connection"))
+    @Test
+    fun testPortNumberFormattingWithoutCommas() {
+        try {
+            CofferTunnelBundle.overrideLanguageForTest = "ZH"
+            val logZh = CofferTunnelBundle.message("log.established", 15432, "root@jump", "172.16.32.22", 5432)
+            assertTrue(logZh.contains("127.0.0.1:15432"))
+            assertTrue(logZh.contains("172.16.32.22:5432"))
+            assertFalse(logZh.contains("15,432"))
+            assertFalse(logZh.contains("5,432"))
 
-        // 恢复 AUTO
-        service.language = "AUTO"
+            CofferTunnelBundle.overrideLanguageForTest = "EN"
+            val logEn = CofferTunnelBundle.message("log.established", 15432, "root@jump", "172.16.32.22", 5432)
+            assertTrue(logEn.contains("127.0.0.1:15432"))
+            assertTrue(logEn.contains("172.16.32.22:5432"))
+            assertFalse(logEn.contains("15,432"))
+            assertFalse(logEn.contains("5,432"))
+        } finally {
+            CofferTunnelBundle.overrideLanguageForTest = null
+        }
     }
 
     @Test

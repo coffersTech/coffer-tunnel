@@ -44,10 +44,23 @@ if [ ! -f "$WRAPPER_JAR" ]; then
     fi
 fi
 
-# 3. 确定 Java 可执行文件路径
-JAVACMD="java"
-if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+# 3. 确定 Java 可执行文件路径（优先适配 Gradle 与 IntelliJ Plugin 要求的 JDK 17/21）
+if [ -d "/Users/Ryan/.sdkman/candidates/java/17.0.13-tem" ]; then
+    JAVA_HOME="/Users/Ryan/.sdkman/candidates/java/17.0.13-tem"
     JAVACMD="$JAVA_HOME/bin/java"
+elif command -v /usr/libexec/java_home >/dev/null 2>&1; then
+    DETECTED_JAVA_17=$(/usr/libexec/java_home -v 17 2>/dev/null)
+    if [ -n "$DETECTED_JAVA_17" ]; then
+        JAVA_HOME="$DETECTED_JAVA_17"
+        JAVACMD="$JAVA_HOME/bin/java"
+    fi
+fi
+
+if [ -z "$JAVACMD" ]; then
+    JAVACMD="java"
+    if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+        JAVACMD="$JAVA_HOME/bin/java"
+    fi
 fi
 
 # 输出当前使用的 Java 版本信息便于确认

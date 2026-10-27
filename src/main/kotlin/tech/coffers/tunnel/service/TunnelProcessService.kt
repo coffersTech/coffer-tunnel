@@ -17,10 +17,11 @@ import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
- * 隧道进程核心管理服务（全局应用级单例，多语言日志支持）
+ * 隧道进程核心管理服务（全局应用级单例，多语言日志支持，支持自动重连与健康自愈）
  */
 class TunnelProcessService : Disposable {
 
@@ -41,8 +42,23 @@ class TunnelProcessService : Disposable {
     // 日志输出观察者
     private val logListeners = CopyOnWriteArrayList<(tunnelId: String, line: String) -> Unit>()
 
+    // 记录用户主动停止的隧道 ID 集合（防止触发异常重连）
+    private val manualStoppedTunnels = ConcurrentHashMap.newKeySet<String>()
+
+    // 记录各隧道的连续自动重试次数 <tunnelId, count>
+    private val reconnectAttempts = ConcurrentHashMap<String, Int>()
+
+    // 记录重连的调度任务句柄，用于主动停止时及时取消 <tunnelId, ScheduledFuture>
+    private val reconnectTasks = ConcurrentHashMap<String, ScheduledFuture<*>>()
+
     private val executor = Executors.newCachedThreadPool { runnable ->
         val thread = Thread(runnable, "CofferTunnel-Worker")
+        thread.isDaemon = true
+        thread
+    }
+
+    private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
+        val thread = Thread(runnable, "CofferTunnel-Scheduler")
         thread.isDaemon = true
         thread
     }
@@ -71,6 +87,10 @@ class TunnelProcessService : Disposable {
             appendLog(tunnel.id, CofferTunnelBundle.message("log.already.alive"))
             return
         }
+
+        // 取消任何待执行的重连任务并移出手工停止名单
+        reconnectTasks.remove(tunnel.id)?.cancel(false)
+        manualStoppedTunnels.remove(tunnel.id)
 
         // 1. 动态读取关联的跳板档案 (SshProfile)
         val settingsService = CofferTunnelSettingsService.getInstance()
@@ -118,7 +138,7 @@ class TunnelProcessService : Disposable {
         // 4. 校验本地端口是否被占用
         if (!TunnelPortValidator.isPortAvailable(tunnel.localPort)) {
             updateStatus(tunnel.id, TunnelStatus.ERROR)
-            appendLog(tunnel.id, CofferTunnelBundle.message("log.port.occupied", tunnel.localPort))
+            appendLog(tunnel.id, CofferTunnelBundle.message("log.port.occupied", tunnel.localPort.toString()))
             return
         }
 
@@ -126,7 +146,7 @@ class TunnelProcessService : Disposable {
         val profileDesc = if (profile != null) " [Profile: ${profile.name}]" else ""
         appendLog(tunnel.id, CofferTunnelBundle.message("log.starting", profileDesc))
 
-        // 5. 构建命令
+        // 5. 构建命令（增强 KeepAlive 心跳与自愈能力）
         val command = mutableListOf<String>().apply {
             add(sshExecutable)
             add("-N")
@@ -137,7 +157,9 @@ class TunnelProcessService : Disposable {
             add("-o")
             add("ExitOnForwardFailure=yes")
             add("-o")
-            add("ServerAliveInterval=30")
+            add("TCPKeepAlive=yes")
+            add("-o")
+            add("ServerAliveInterval=15")
             add("-o")
             add("ServerAliveCountMax=3")
 
@@ -191,40 +213,42 @@ class TunnelProcessService : Disposable {
                 }
             }
 
-            // 异步监控退出
+            // 异步监控退出与自愈
             executor.submit {
                 try {
                     val exitedEarly = process.waitFor(1200, TimeUnit.MILLISECONDS)
                     if (exitedEarly) {
                         val exitCode = process.exitValue()
                         activeProcesses.remove(tunnel.id)
+                        reconnectAttempts.remove(tunnel.id)
                         updateStatus(tunnel.id, TunnelStatus.ERROR)
-                        appendLog(tunnel.id, CofferTunnelBundle.message("log.exit.abnormal", exitCode))
+                        appendLog(tunnel.id, CofferTunnelBundle.message("log.exit.abnormal", exitCode.toString()))
                     } else {
                         updateStatus(tunnel.id, TunnelStatus.RUNNING)
+                        // 建立成功后重置重连计数
+                        reconnectAttempts.remove(tunnel.id)
                         appendLog(
                             tunnel.id,
                             CofferTunnelBundle.message(
                                 "log.established",
-                                tunnel.localPort,
+                                tunnel.localPort.toString(),
                                 "${effectiveUsername}@${effectiveJumpHost}",
                                 tunnel.remoteHost,
-                                tunnel.remotePort
+                                tunnel.remotePort.toString()
                             )
                         )
 
                         val exitVal = process.waitFor()
                         activeProcesses.remove(tunnel.id)
+                        appendLog(tunnel.id, CofferTunnelBundle.message("log.stopped", exitVal.toString()))
 
-                        val finalStatus = if (getStatus(tunnel.id) == TunnelStatus.STOPPED) {
-                            TunnelStatus.STOPPED
-                        } else if (exitVal == 0) {
-                            TunnelStatus.STOPPED
+                        val isManual = manualStoppedTunnels.contains(tunnel.id)
+                        if (isManual || exitVal == 0) {
+                            updateStatus(tunnel.id, TunnelStatus.STOPPED)
                         } else {
-                            TunnelStatus.ERROR
+                            // 运行中意外掉线（网络闪断或服务端超时），触发自动重连自愈机制
+                            scheduleAutoReconnect(tunnel)
                         }
-                        updateStatus(tunnel.id, finalStatus)
-                        appendLog(tunnel.id, CofferTunnelBundle.message("log.stopped", exitVal))
                     }
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
@@ -242,8 +266,52 @@ class TunnelProcessService : Disposable {
         }
     }
 
+    private fun scheduleAutoReconnect(tunnel: TunnelConfig) {
+        if (manualStoppedTunnels.contains(tunnel.id)) {
+            return
+        }
+
+        val currentAttempt = (reconnectAttempts[tunnel.id] ?: 0) + 1
+        if (currentAttempt > MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts.remove(tunnel.id)
+            updateStatus(tunnel.id, TunnelStatus.ERROR)
+            appendLog(
+                tunnel.id,
+                CofferTunnelBundle.message("log.reconnect.exhausted", MAX_RECONNECT_ATTEMPTS.toString())
+            )
+            return
+        }
+
+        reconnectAttempts[tunnel.id] = currentAttempt
+        val delaySeconds = if (currentAttempt <= 2) 3L else 5L
+        updateStatus(tunnel.id, TunnelStatus.STARTING)
+        appendLog(
+            tunnel.id,
+            CofferTunnelBundle.message(
+                "log.reconnecting",
+                currentAttempt.toString(),
+                MAX_RECONNECT_ATTEMPTS.toString(),
+                delaySeconds.toString()
+            )
+        )
+
+        val future = scheduler.schedule({
+            reconnectTasks.remove(tunnel.id)
+            if (!manualStoppedTunnels.contains(tunnel.id)) {
+                val latest = CofferTunnelSettingsService.getInstance().findTunnelById(tunnel.id) ?: tunnel
+                startTunnel(latest)
+            }
+        }, delaySeconds, TimeUnit.SECONDS)
+
+        reconnectTasks[tunnel.id] = future
+    }
+
     @Synchronized
     fun stopTunnel(tunnelId: String) {
+        manualStoppedTunnels.add(tunnelId)
+        reconnectTasks.remove(tunnelId)?.cancel(false)
+        reconnectAttempts.remove(tunnelId)
+
         val process = activeProcesses.remove(tunnelId)
         updateStatus(tunnelId, TunnelStatus.STOPPED)
 
@@ -266,6 +334,10 @@ class TunnelProcessService : Disposable {
 
     @Synchronized
     fun stopAll() {
+        reconnectTasks.forEach { (_, future) -> future.cancel(false) }
+        reconnectTasks.clear()
+        reconnectAttempts.clear()
+
         if (activeProcesses.isEmpty()) return
         log.info("CofferTunnel: Safely cleaning up running SSH child processes...")
 
@@ -273,6 +345,7 @@ class TunnelProcessService : Disposable {
         activeProcesses.clear()
 
         currentRunning.forEach { (tunnelId, process) ->
+            manualStoppedTunnels.add(tunnelId)
             updateStatus(tunnelId, TunnelStatus.STOPPED)
             appendLog(tunnelId, CofferTunnelBundle.message("log.lifecycle.cleanup"))
             try {
@@ -339,10 +412,13 @@ class TunnelProcessService : Disposable {
 
     override fun dispose() {
         stopAll()
+        scheduler.shutdownNow()
         executor.shutdownNow()
     }
 
     companion object {
+        private const val MAX_RECONNECT_ATTEMPTS = 5
+
         fun getInstance(): TunnelProcessService {
             return ApplicationManager.getApplication().getService(TunnelProcessService::class.java)
         }
